@@ -18,6 +18,15 @@ target_ranks = set([
     'phylum', 
     'superkingdom'
 ])
+out_cols = [
+    'gene_callers_id', 
+    't_phylum', 
+    't_class', 
+    't_order', 
+    't_family', 
+    't_genus', 
+    't_species'
+]
 
 # Globals set in parent process
 threads = 1
@@ -38,6 +47,7 @@ def main():
     # e-values should include "e" for exponentiation
     assert pd.api.types.is_object_dtype(uid_df['e'])
 
+    uids = uid_df['uid'].tolist()
     uniq_uids = list(set(uid_df['uid']))
     # 0 is the value when no alignment is found
     uniq_uids.remove(0)
@@ -45,13 +55,26 @@ def main():
     procedure = 'Taxonomic hierarchy recovery'
     rank_record = OrderedDict().fromkeys(target_ranks)
     mp_pool = Pool(threads)
-    hiers = mp_pool.map(get_hier, uniq_uids)
+    uniq_hiers = mp_pool.map(get_hier, uniq_uids)
     mp_pool.close()
     mp_pool.join()
 
+    uid_hier_dict = OrderedDict().fromkeys(uniq_uids)
+    uid_hier_dict[0] = ['' for rank in target_ranks]
+    hiers = []
+    for i, uid in enumerate(uids):
+        hiers.append(uid_hier_dict[uid])
+    hier_df = pd.DataFrame(hiers, columns=target_ranks)
+    out_df = pd.concat([uid_df[['qid']], hier_df[target_ranks[-1]]], axis=1)
+    out_df.drop('superkingdom', inplace=True)
+    out_df.columns = out_cols
+    out_df.to_csv(args.out, sep='\t')
+
+    return
+
 def get_hier(uid, rank_record):
     '''
-    Get taxonomic hierarchy from UID
+    Get taxonomic hierarchy for UID from Entrez
     '''
 
     print_prog()
