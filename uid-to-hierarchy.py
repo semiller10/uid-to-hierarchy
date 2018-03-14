@@ -3,30 +3,53 @@ from Bio import Entrez
 import pandas as pd
 import sys
 
-from multiprocessing import current_process()
+from functools import partial
+from multiprocessing import current_process, Pool
 
 Entrez.email = 'samuelmiller10@gmail.com'
 
+# Globals set in parent process
+threads = 1
+one_pct_tot = 0
+procedure = ''
+# Global exclusively set and accessed in child process
 prog_count = 0
 
 def main():
 
+    global threads, one_pct_tot
+
     args = get_args()
+    threads = args.threads
 
     uid_df = pd.read_csv(args.uid, sep='\t', header=None, columns=['qid', 'uid', 'e'])
+    assert pd.api.types.is_numeric_dtype(uid_df['uid'])
+    # e-values should include "e" for exponentiation
+    assert pd.api.types.is_object_dtype(uid_df['e'])
+
     uniq_uids = list(set(uid_df['uid']))
+    one_pct_tot = len(uniq_uids) / 100 / threads
+    procedure = 'Taxonomic hierarchy recovery'
+    mp_pool = Pool(threads)
+    hiers = mp_pool.map(uniq_uids)
+    mp_pool.close()
+    mp_pool.join()
+
     uid_hier_df = get_hier(uniq_uids)
 
-def get_hier(uids):
+def get_hier(uid):
     '''
-    Get taxonomic hierarchy of each UID
+    Get taxonomic hierarchy from UID
     '''
 
+    mp_pool = Pool(threads)
 
 
     return uid_hier_df
 
-def print_prog(procedure, one_pct_tot, threads):
+def get_lineage(uid):
+
+def print_prog(procedure, one_pct_tot):
     '''
     Print percent progress
     '''
