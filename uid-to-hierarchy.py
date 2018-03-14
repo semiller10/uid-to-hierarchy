@@ -2,11 +2,22 @@ import ArgumentParser
 from Bio import Entrez
 import pandas as pd
 import sys
+import time
 
+from collections import OrderedDict
 from functools import partial
 from multiprocessing import current_process, Pool
 
 Entrez.email = 'samuelmiller10@gmail.com'
+target_ranks = set([
+    'species', 
+    'genus', 
+    'family', 
+    'order', 
+    'class', 
+    'phylum', 
+    'superkingdom'
+])
 
 # Globals set in parent process
 threads = 1
@@ -28,28 +39,65 @@ def main():
     assert pd.api.types.is_object_dtype(uid_df['e'])
 
     uniq_uids = list(set(uid_df['uid']))
+    # 0 is the value when no alignment is found
+    uniq_uids.remove(0)
     one_pct_tot = len(uniq_uids) / 100 / threads
     procedure = 'Taxonomic hierarchy recovery'
+    rank_record = OrderedDict().fromkeys(target_ranks)
     mp_pool = Pool(threads)
-    hiers = mp_pool.map(uniq_uids)
+    hiers = mp_pool.map(get_hier, uniq_uids)
     mp_pool.close()
     mp_pool.join()
 
-    uid_hier_df = get_hier(uniq_uids)
-
-def get_hier(uid):
+def get_hier(uid, rank_record):
     '''
     Get taxonomic hierarchy from UID
     '''
 
-    mp_pool = Pool(threads)
+    print_prog()
 
+    # Entrez occasionally returns corrupted data
+    bad_rtn = True
+    for retrials in range(5):
+        while True:
+            try:
+                data = Entrez.read(Entrez.efetch(db='Taxonomy', id=uid))
+                break
+            except:
+                print('Waiting for Entrez to process UID ', str(uid), flush=True)
+                time.sleep(2)
+        uid_taxon = data[0]['ScientificName']
+        uid_rank = data[0]['Rank']
+        hier_data = data[0]['LineageEx']
 
-    return uid_hier_df
+        hier_ranks = set()
+        if uid_rank in target_ranks:
+            rank_record[uid_rank] = uid_taxon
+            hier_ranks.add(uid_rank)
+        # Record higher ranks
+        for entry in hier_data:
+            higher_rank = entry['Rank']
+            if higher_rank in target_ranks:
+                rank_record[higher_rank] = entry['ScientificName']
+                hier_ranks.add(higher_rank)
+        # Record unresolvable ranks
+        for rank in target_ranks.difference(hier_ranks):
+            rank_dict[rank] = ''
+
+        hier = [rank for rank in rank_dict.values()]
+        if hier[-1] not in superkingdoms:
+            print(
+                'Querying Entrez again with UID: ', str(uid), ' due to corrupted return data', 
+                flush=True
+            )
+        else:
+            break
+
+    return hier
 
 def get_lineage(uid):
 
-def print_prog(procedure, one_pct_tot):
+def print_prog():
     '''
     Print percent progress
     '''
