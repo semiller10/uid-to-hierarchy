@@ -4,11 +4,12 @@ Create taxonomic tables for Anvio
 
 import argparse
 from Bio import Entrez
+import os.path
 import pandas as pd
 import sys
 import time
 
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from functools import partial
 from multiprocessing import current_process, Pool
 
@@ -47,12 +48,12 @@ prog_count = 0
 
 def main():
 
-    global threads, one_pct_tot
+    global threads, one_pct_tot, procedure
 
     args = get_args()
     threads = args.threads
 
-    uid_df = pd.read_csv(args.uid, sep='\t', header=None, names=['qid', 'uid', 'e'])
+    uid_df = pd.read_csv(args.uid, sep='\t', header=None, names=['gene_callers_id', 'uid', 'e'])
     assert pd.api.types.is_numeric_dtype(uid_df['uid'])
     assert pd.api.types.is_numeric_dtype(uid_df['e'])
     
@@ -80,15 +81,15 @@ def main():
     for i, uid in enumerate(uids):
         hiers.append(uid_hier_dict[uid])
     hier_df = pd.DataFrame(hiers, columns=target_ranks)
-    out_df = pd.concat([uid_df[['qid']], hier_df[target_ranks[::-1]]], axis=1)
+    out_df = pd.concat([uid_df[['gene_callers_id']], hier_df[target_ranks[::-1]]], axis=1)
 
     if bool(args.gene_table):
-        make_misc_tbl(out_df, args.gene_table, args.split_fasta)
+        make_misc_tbl(out_df, args.gene_table, args.split_fasta, args.out)
 
     # Write taxonomy table
-    tax_out_df = out_df.drop('superkingdom', axis=1)
-    tax_out_df.columns = tax_out_cols
-    tax_out_df.to_csv(args.out, sep='\t', index=False)
+    out_df = out_df.drop('superkingdom', axis=1)
+    out_df.columns = tax_out_cols
+    out_df.to_csv(args.out, sep='\t', index=False)
 
     return
 
@@ -97,24 +98,25 @@ def make_misc_tbl(gene_tax_tbl, gene_contig_tbl, split_fasta, out):
     Make table with which each rank can be imported into Anvio as a layer (via anvi-import-misc-data)
     '''
 
+    global one_pct_tot, procedure
+
     # Annotate the taxonomy of each contig
     gene_contig_df = pd.read_csv(
         gene_contig_tbl, sep='\t', header=0, usecols=['gene_callers_id', 'contig']
     )
-    gene_contig_df = gene_contig_df.merge(gene_tax_tbl, how=left, on='gene_callers_id')
+    gene_contig_df = gene_contig_df.merge(gene_tax_tbl, how='left', on='gene_callers_id')
     gene_contig_gb = gene_contig_df.groupby('contig', as_index=False)
     contig_tax_dict = OrderedDict([(k, []) for k in ['contig'] + target_ranks])
-    for contig_id, group in gene_contig_gb:
-        contig_tax_dict['contig'] = contig_id
-        for rank in target_ranks:
-            freq_tax = group[rank].value_counts().index.tolist()
-            if len(freq_tax) == 1:
-                contig_tax_dict[rank] = freq_tax[0]
-            else:
-                for tax in freq_tax:
-                    if freq_tax != '':
-                        contig_tax_dict[rank] = tax
-    contig_tax_df = pd.DataFrame(contig_tax_dict)
+
+    one_pct_tot = len(gene_contig_gb) / 100 / threads
+    procedure = 'Contig taxonomy assignment'
+    mp_pool = Pool(threads, initializer=initialize_assign_taxa, initargs=(contig_tax_dict, ))
+    contig_tax_lol = mp_pool.map(assign_taxa, gene_contig_gb)
+    mp_pool.close()
+    mp_pool.join()
+    contig_tax_df = pd.DataFrame(contig_tax_lol, columns=['contig'] + target_ranks)
+
+    print(contig_tax_df, flush=True)
 
     # Annotate the taxonomy of each split
     split_tax_df = convert_to_split(contig_tax_df, split_fasta)
@@ -129,6 +131,35 @@ def make_misc_tbl(gene_tax_tbl, gene_contig_tbl, split_fasta, out):
 
     return
 
+def initialize_assign_taxa(_contig_tax_dict):
+
+    global contig_tax_dict
+
+    contig_tax_dict = _contig_tax_dict
+
+    return
+
+
+def assign_taxa(tup):
+
+    print_prog()
+
+    contig_id = tup[0]
+    group = tup[1]
+
+    contig_tax = [contig_id]
+    for rank in target_ranks:
+        freq_tax_tups = Counter(group[rank]).most_common(2)
+        if len(freq_tax_tups) == 1:
+            contig_tax.append(freq_tax_tups[0][0])
+        else:
+            for tup in freq_tax_tups:
+                if tup[0] != '':
+                    contig_tax.append(tup[0])
+                    break
+
+    return contig_tax
+
 def convert_to_split(contig_df, split_fasta):
     '''
     Given an arbitrary df with rows for each contig, convert to rows for each split
@@ -139,12 +170,12 @@ def convert_to_split(contig_df, split_fasta):
     with open(split_fasta) as handle:
         for line in handle.readlines():
             if line[0] == '>':
-            id_parts = line.split('_split_')
-            contig_id = id_parts[0].lstrip('>')
-            try:
-                split_count_dict[contig_id] += 1
-            except KeyError:
-                split_count_dict[contig_id] = 1
+                id_parts = line.split('_split_')
+                contig_id = id_parts[0].lstrip('>')
+                try:
+                    split_count_dict[contig_id] += 1
+                except KeyError:
+                    split_count_dict[contig_id] = 1
 
     split_counts = [split_count_dict[contig_id] for contig_id in contig_df['contig'].tolist()]
     contig_df['split_count'] = split_counts
@@ -159,9 +190,9 @@ def convert_to_split(contig_df, split_fasta):
             contig_ids.append(contig_id)
 
     split_df = pd.DataFrame({'split': split_ids, 'contig': contig_ids})
-    split_df = split_df.merge(contig_df, how=left, on='contig')
-    split_df.drop('contig', axis=1, inplace=True)
-    other_cols = split_df.columns
+    split_df = split_df.merge(contig_df, how='left', on='contig')
+    split_df.drop(['contig', 'split_count'], axis=1, inplace=True)
+    other_cols = split_df.columns.tolist()
     other_cols.remove('split')
     split_df = split_df[['split'] + other_cols]
 
@@ -225,8 +256,7 @@ def print_prog():
         if int(prog_count % one_pct_tot) == 0:
             pct = int(prog_count / one_pct_tot)
             if pct <= 100:
-                print_over_line('{0}: {1}%'.format(procedure, pct))
-                print_over_line(procedure + ':' + str(pct) + '%')    
+                print_over_line(procedure + ': ' + str(pct) + '%')    
 
 def print_over_line(msg):
     # Clear to end of line
@@ -240,7 +270,7 @@ def get_args():
     '''
 
     parser = argparse.ArgumentParser(
-        help=(
+        description=(
             'Generate taxonomy table for addition to contigs table '
             'and optionally taxonomy table for addition to profile as miscellaneous data'
         )
