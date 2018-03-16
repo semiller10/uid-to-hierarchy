@@ -97,6 +97,43 @@ def make_misc_tbl(gene_tax_tbl, gene_contig_tbl, split_fasta, out):
     Make table with which each rank can be imported into Anvio as a layer (via anvi-import-misc-data)
     '''
 
+    # Annotate the taxonomy of each contig
+    gene_contig_df = pd.read_csv(
+        gene_contig_tbl, sep='\t', header=0, usecols=['gene_callers_id', 'contig']
+    )
+    gene_contig_df = gene_contig_df.merge(gene_tax_tbl, how=left, on='gene_callers_id')
+    gene_contig_gb = gene_contig_df.groupby('contig', as_index=False)
+    contig_tax_dict = OrderedDict([(k, []) for k in ['contig'] + target_ranks])
+    for contig_id, group in gene_contig_gb:
+        contig_tax_dict['contig'] = contig_id
+        for rank in target_ranks:
+            freq_tax = group[rank].value_counts().index.tolist()
+            if len(freq_tax) == 1:
+                contig_tax_dict[rank] = freq_tax[0]
+            else:
+                for tax in freq_tax:
+                    if freq_tax != '':
+                        contig_tax_dict[rank] = tax
+    contig_tax_df = pd.DataFrame(contig_tax_dict)
+
+    # Annotate the taxonomy of each split
+    split_tax_df = convert_to_split(contig_tax_df, split_fasta)
+
+    new_basename = os.path.splitext(os.path.basename(out))[0] + '.splits'
+    ext = os.path.splitext(os.path.basename(out))[1]
+    path = os.path.join(
+        os.path.dirname(out), 
+        new_basename + ext
+    )
+    split_tax_df.to_csv(path, sep='\t', index=False)
+
+    return
+
+def convert_to_split(contig_df, split_fasta):
+    '''
+    Given an arbitrary df with rows for each contig, convert to rows for each split
+    '''
+
     # Record the number of splits per contig
     split_count_dict = OrderedDict()
     with open(split_fasta) as handle:
@@ -109,48 +146,26 @@ def make_misc_tbl(gene_tax_tbl, gene_contig_tbl, split_fasta, out):
             except KeyError:
                 split_count_dict[contig_id] = 1
 
-    # Annotate the taxonomy of each contig
-    gene_contig_df = pd.read_csv(
-        gene_contig_tbl, sep='\t', header=0, usecols=['gene_callers_id', 'contig']
-    )
-    gene_contig_df = gene_contig_df.merge(gene_tax_tbl, how=left, on='gene_callers_id')
-    gene_contig_gb = gene_contig_df.groupby('contig', as_index=False)
-    contig_tax_dict = OrderedDict([(k, []) for k in ['contig', 'split_count'] + target_ranks])
-    for contig, group in gene_contig_gb:
-        contig_tax_dict['contig'] = contig
-        contig_tax_dict['split_count'] = split_count_dict[contig]
-        for rank in target_ranks:
-            freq_tax = group[rank].value_counts().index.tolist()
-            if len(freq_tax) == 1:
-                contig_tax_dict[rank] = freq_tax[0]
-            else:
-                for tax in freq_tax:
-                    if freq_tax != '':
-                        contig_tax_dict[rank] = tax
-    contig_tax_df = pd.DataFrame(contig_tax_dict)
+    split_counts = [split_count_dict[contig_id] for contig_id in contig_df['contig'].tolist()]
+    contig_df['split_count'] = split_counts
     
-    # Annotate the taxonomy of each split
-    splits = []
-    contigs = []
-    for contig, split_count in split_count_dict.items():
+    split_ids = []
+    contig_ids = []
+    for contig_id, split_count in split_count_dict.items():
         for i in range(1, split_count + 1):
             split_num = str(i)
-            split = contig + '_split_' + (5 - len(split_num)) * '0' + str(split_num)
-            splits.append(split)
-            contigs.append(contig)
-    split_tax_df = pd.DataFrame({'split': splits, 'contig': contigs})
-    split_tax_df = split_tax_df.merge(contig_tax_df, how=left, on='contig')
+            split_id = contig_id + '_split_' + (5 - len(split_num)) * '0' + str(split_num)
+            split_ids.append(split_id)
+            contig_ids.append(contig_id)
 
-    split_tax_df.drop('contig', axis=1, inplace=True)
-    new_basename = os.path.splitext(os.path.basename(out))[0] + '.splits'
-    ext = os.path.splitext(os.path.basename(out))[1]
-    path = os.path.join(
-        os.path.dirname(out), 
-        new_basename + ext
-    )
-    split_tax_df.to_csv(path, sep='\t', index=False)
+    split_df = pd.DataFrame({'split': split_ids, 'contig': contig_ids})
+    split_df = split_df.merge(contig_df, how=left, on='contig')
+    split_df.drop('contig', axis=1, inplace=True)
+    other_cols = split_df.columns
+    other_cols.remove('split')
+    split_df = split_df[['split'] + other_cols]
 
-    return
+    return split_df
 
 def get_hier(uid, rank_record):
     '''
