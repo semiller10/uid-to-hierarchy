@@ -84,7 +84,7 @@ def main():
     out_df = pd.concat([uid_df[['gene_callers_id']], hier_df[target_ranks[::-1]]], axis=1)
 
     if bool(args.gene_table):
-        make_misc_tbl(out_df, args.gene_table, args.split_fasta, args.out)
+        make_misc_tbl(out_df, args.gene_table, args.split_ids, args.out)
 
     # Write taxonomy table
     out_df = out_df.drop('superkingdom', axis=1)
@@ -93,9 +93,9 @@ def main():
 
     return
 
-def make_misc_tbl(gene_tax_tbl, gene_contig_tbl, split_fasta, out):
+def make_misc_tbl(gene_tax_tbl, gene_contig_tbl, split_ids, out):
     '''
-    Make table with which each rank can be imported into Anvio as a layer (via anvi-import-misc-data)
+    Make taxonomy table to import into Anvio profile db (via anvi-import-misc-data)
     '''
 
     global one_pct_tot, procedure
@@ -119,7 +119,7 @@ def make_misc_tbl(gene_tax_tbl, gene_contig_tbl, split_fasta, out):
     print(contig_tax_df, flush=True)
 
     # Annotate the taxonomy of each split
-    split_tax_df = convert_to_split(contig_tax_df, split_fasta)
+    split_tax_df = convert_to_split(contig_tax_df, split_ids)
 
     new_basename = os.path.splitext(os.path.basename(out))[0] + '.splits'
     ext = os.path.splitext(os.path.basename(out))[1]
@@ -160,38 +160,19 @@ def assign_taxa(tup):
 
     return contig_tax
 
-def convert_to_split(contig_df, split_fasta):
+def convert_to_split(contig_df, split_ids):
     '''
-    Given an arbitrary df with rows for each contig, convert to rows for each split
+    Given an arbitrary df with rows for contigs in contigs db, 
+    convert to rows for splits in profile db
     '''
 
-    # Record the number of splits per contig
-    split_count_dict = OrderedDict()
-    with open(split_fasta) as handle:
-        for line in handle.readlines():
-            if line[0] == '>':
-                id_parts = line.split('_split_')
-                contig_id = id_parts[0].lstrip('>')
-                try:
-                    split_count_dict[contig_id] += 1
-                except KeyError:
-                    split_count_dict[contig_id] = 1
+    split_df = pd.DataFrame()
+    with open(split_ids) as handle:
+        split_df['split'] = [line.rstrip() for line in split_ids]
+    split_df['contig'] = split_df['split'].apply(lambda split_id: split_id.split('_split_')[0])
 
-    split_counts = [split_count_dict[contig_id] for contig_id in contig_df['contig'].tolist()]
-    contig_df['split_count'] = split_counts
-    
-    split_ids = []
-    contig_ids = []
-    for contig_id, split_count in split_count_dict.items():
-        for i in range(1, split_count + 1):
-            split_num = str(i)
-            split_id = contig_id + '_split_' + (5 - len(split_num)) * '0' + str(split_num)
-            split_ids.append(split_id)
-            contig_ids.append(contig_id)
-
-    split_df = pd.DataFrame({'split': split_ids, 'contig': contig_ids})
     split_df = split_df.merge(contig_df, how='left', on='contig')
-    split_df.drop(['contig', 'split_count'], axis=1, inplace=True)
+    split_df.drop(['contig'], axis=1, inplace=True)
     other_cols = split_df.columns.tolist()
     other_cols.remove('split')
     split_df = split_df[['split'] + other_cols]
@@ -278,7 +259,7 @@ def get_args():
     parser.add_argument('uid', help='Path to DIAMOND NCBI Taxonomy UID output file')
     parser.add_argument('out', help='Path to taxonomic hierarchy table output')
     parser.add_argument('--gene_table', help='Path to anvi-output-gene-calls output')
-    parser.add_argument('--split_fasta', help='Path to anvi-export-contigs --splits-mode output')
+    parser.add_argument('--split_ids', help='Path to anvi-get-split-coverages --list-splits output')
     parser.add_argument(
         '--threads', 
         default=1, 
