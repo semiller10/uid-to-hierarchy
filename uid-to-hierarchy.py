@@ -28,7 +28,7 @@ superkingdoms=[
     'Eukaryota',
     'Viruses'    
 ]
-out_cols = [
+tax_out_cols = [
     'gene_callers_id', 
     't_phylum', 
     't_class', 
@@ -81,9 +81,23 @@ def main():
         hiers.append(uid_hier_dict[uid])
     hier_df = pd.DataFrame(hiers, columns=target_ranks)
     out_df = pd.concat([uid_df[['qid']], hier_df[target_ranks[::-1]]], axis=1)
-    out_df.drop('superkingdom', axis=1, inplace=True)
-    out_df.columns = out_cols
-    out_df.to_csv(args.out, sep='\t', index=False)
+
+    if bool(args.gene_table):
+        make_misc_tbl(out_df, args.gene_table, args.split_fasta)
+
+    # Write taxonomy table
+    tax_out_df = out_df.drop('superkingdom', axis=1)
+    tax_out_df.columns = tax_out_cols
+    tax_out_df.to_csv(args.out, sep='\t', index=False)
+
+    return
+
+def make_misc_tbl(gene_tax_tbl, gene_contig_tbl, split_fasta):
+    '''
+    Make table with which each rank can be imported into Anvio as a layer (via anvi-import-misc-data)
+    '''
+
+    
 
     return
 
@@ -168,6 +182,7 @@ def get_args():
     parser.add_argument('uid', help='Path to DIAMOND NCBI Taxonomy UID output file')
     parser.add_argument('out', help='Path to taxonomic hierarchy table output')
     parser.add_argument('--gene_table', help='Path to anvi-output-gene-calls output')
+    parser.add_argument('--split_fasta', help='Path to anvi-export-contigs --splits-mode output')
     parser.add_argument(
         '--threads', 
         default=1, 
@@ -176,6 +191,8 @@ def get_args():
     )
 
     args = parser.parse_args()
+    if bool(args.gene_table) != bool(args.split_fasta):
+        parser.error('Both gene_table and split_fasta must be specified')
 
     return args
 
