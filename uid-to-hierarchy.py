@@ -1,3 +1,7 @@
+'''
+Create taxonomic tables for Anvio
+'''
+
 import argparse
 from Bio import Entrez
 import pandas as pd
@@ -155,9 +159,15 @@ def get_args():
     Get command line arguments
     '''
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        help=(
+            'Generate taxonomy table for addition to contigs table '
+            'and optionally taxonomy table for addition to profile as miscellaneous data'
+        )
+    )
     parser.add_argument('uid', help='Path to DIAMOND NCBI Taxonomy UID output file')
     parser.add_argument('out', help='Path to taxonomic hierarchy table output')
+    parser.add_argument('--gene_table', help='Path to anvi-output-gene-calls output')
     parser.add_argument(
         '--threads', 
         default=1, 
