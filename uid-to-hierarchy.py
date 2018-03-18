@@ -81,42 +81,50 @@ def main():
     for i, uid in enumerate(uids):
         hiers.append(uid_hier_dict[uid])
     hier_df = pd.DataFrame(hiers, columns=target_ranks)
-    out_df = pd.concat([uid_df[['gene_callers_id']], hier_df[target_ranks[::-1]]], axis=1)
+    gene_tax_df = pd.concat([uid_df[['gene_callers_id']], hier_df[target_ranks[::-1]]], axis=1)
 
-    if bool(args.gene_table):
-        make_misc_tbl(out_df, args.gene_table, args.split_ids, args.out)
-
-    # Write taxonomy table
-    out_df = out_df.drop('superkingdom', axis=1)
+    # Write taxonomy table for contigs db
+    out_df = gene_tax_df.drop('superkingdom', axis=1)
     out_df.columns = tax_out_cols
     out_df.to_csv(args.out, sep='\t', index=False)
 
+    # Make and write taxonomy table for profile db 
+    if bool(args.gene_table):
+        make_misc_tbl(gene_tax_df, args.gene_table, args.split_ids, args.out)
+
     return
 
-def make_misc_tbl(gene_tax_tbl, gene_contig_tbl, split_ids, out):
+def make_misc_tbl(gene_tax_df, gene_contig_tbl, split_ids, out):
     '''
-    Make taxonomy table to import into Anvio profile db (via anvi-import-misc-data)
+    Make taxonomy table for each split in Anvio profile db (via anvi-import-misc-data)
     '''
 
     global one_pct_tot, procedure
 
     # Annotate the taxonomy of each contig
-    gene_contig_df = pd.read_csv(
+    gene_contig_id_df = pd.read_csv(
         gene_contig_tbl, sep='\t', header=0, usecols=['gene_callers_id', 'contig']
     )
-    gene_contig_df = gene_contig_df.merge(gene_tax_tbl, how='left', on='gene_callers_id')
-    gene_contig_gb = gene_contig_df.groupby('contig', as_index=False)
+    with open(split_ids) as handle:
+        profile_contigs = sorted(list(set(
+            [line.split('_split_')[0] for line in handle.readlines()]
+        )))
+    gene_contig_id_df.set_index('contig', inplace=True)
+    gene_contig_id_df = gene_contig_id_df.loc[profile_contigs]
+    gene_contig_id_df.reset_index(inplace=True)
+
+    gene_contig_id_df = gene_contig_id_df.merge(gene_tax_df, how='left', on='gene_callers_id')
+    gene_contig_id_df.drop('gene_callers_id', axis=1, inplace=True)
+    gene_contig_id_gb = gene_contig_id_df.groupby('contig', as_index=False)
     contig_tax_dict = OrderedDict([(k, []) for k in ['contig'] + target_ranks])
 
-    one_pct_tot = len(gene_contig_gb) / 100 / threads
+    one_pct_tot = len(gene_contig_id_gb) / 100 / threads
     procedure = 'Contig taxonomy assignment'
     mp_pool = Pool(threads, initializer=initialize_assign_taxa, initargs=(contig_tax_dict, ))
-    contig_tax_lol = mp_pool.map(assign_taxa, gene_contig_gb)
+    contig_tax_lol = mp_pool.map(assign_taxa, gene_contig_id_gb)
     mp_pool.close()
     mp_pool.join()
     contig_tax_df = pd.DataFrame(contig_tax_lol, columns=['contig'] + target_ranks)
-
-    print(contig_tax_df, flush=True)
 
     # Annotate the taxonomy of each split
     split_tax_df = convert_to_split(contig_tax_df, split_ids)
@@ -138,7 +146,6 @@ def initialize_assign_taxa(_contig_tax_dict):
     contig_tax_dict = _contig_tax_dict
 
     return
-
 
 def assign_taxa(tup):
 
@@ -168,7 +175,7 @@ def convert_to_split(contig_df, split_ids):
 
     split_df = pd.DataFrame()
     with open(split_ids) as handle:
-        split_df['split'] = [line.rstrip() for line in split_ids]
+        split_df['split'] = [line.rstrip() for line in handle.readlines()]
     split_df['contig'] = split_df['split'].apply(lambda split_id: split_id.split('_split_')[0])
 
     split_df = split_df.merge(contig_df, how='left', on='contig')
@@ -216,7 +223,6 @@ def get_hier(uid, rank_record):
 
         hier = [rank for rank in rank_record.values()]
         if hier[-1] not in superkingdoms:
-            print(hier, flush=True)
             print(
                 'Querying Entrez again with UID: ', str(uid), ' due to corrupted return data', 
                 flush=True
@@ -256,11 +262,12 @@ def get_args():
             'and optionally taxonomy table for addition to profile as miscellaneous data'
         )
     )
-    parser.add_argument('uid', help='Path to DIAMOND NCBI Taxonomy UID output file')
-    parser.add_argument('out', help='Path to taxonomic hierarchy table output')
-    parser.add_argument('--gene_table', help='Path to anvi-output-gene-calls output')
-    parser.add_argument('--split_ids', help='Path to anvi-get-split-coverages --list-splits output')
+    parser.add_argument('-u', '--uid', help='Path to DIAMOND NCBI Taxonomy UID output file')
+    parser.add_argument('-o', '--out', help='Path to taxonomic hierarchy table output')
+    parser.add_argument('-g', '--gene_table', help='Path to anvi-output-gene-calls output')
+    parser.add_argument('-s',  '--split_ids', help='Path to anvi-get-split-coverages --list-splits output')
     parser.add_argument(
+        '-t', 
         '--threads', 
         default=1, 
         type=int, 
@@ -268,8 +275,10 @@ def get_args():
     )
 
     args = parser.parse_args()
-    if bool(args.gene_table) != bool(args.split_fasta):
-        parser.error('Both gene_table and split_fasta must be specified')
+    if not bool(args.uid) or not bool(args.out):
+        parser.error('uid and out must be specified')
+    if bool(args.gene_table) != bool(args.split_ids):
+        parser.error('Both gene_table and split_ids must be specified')
 
     return args
 
